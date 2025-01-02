@@ -13,6 +13,12 @@ def load_data(file_path):
     sql = 'SELECT * FROM stock_info ORDER BY code, day asc'
     stock_info = pd.read_sql_query(sql, conn)
     stock_info['pct_change'] = stock_info['close'].pct_change().fillna(0)
+    stock_info['high_pct_change'] = (stock_info['high'] - stock_info['close'].shift(1)) / stock_info['close'].shift(1)
+    stock_info['high_pct_change'] = stock_info['high_pct_change'].fillna(0)
+    stock_info['low_pct_change'] = (stock_info['low'] - stock_info['close'].shift(1)) / stock_info['close'].shift(1)
+    stock_info['low_pct_change'] = stock_info['low_pct_change'].fillna(0)
+    stock_info['open_pct_change'] = (stock_info['open'] - stock_info['close'].shift(1)) / stock_info['close'].shift(1)
+    stock_info['open_pct_change'] = stock_info['open_pct_change'].fillna(0)
     print(stock_info.head())
     return stock_info
 
@@ -65,9 +71,23 @@ def pct_trans(pct):
 
 def pct_trans2(df):
     num_bins = 20
-    df['bin'] = pd.qcut(df['pct_change'], q=num_bins) 
+    df['bin'], bins = pd.qcut(df['pct_change'], q=num_bins, retbins=True, duplicates='drop') 
     print(df['bin'].value_counts().sort_index())
     df['bin_index'] = pd.Categorical(df['bin']).codes + 1
+    
+    # 可能会遇到区间不匹配问题, 需要对区间两端进行处理
+    df['high_pct_change'] = np.where(df['high_pct_change'] < bins[0], bins[0], np.where(df['high_pct_change'] > bins[-1], bins[-1], df['high_pct_change']))
+    df['low_pct_change'] = np.where(df['low_pct_change'] < bins[0], bins[0], np.where(df['low_pct_change'] > bins[-1], bins[-1], df['low_pct_change']))
+    df['open_pct_change'] = np.where(df['open_pct_change'] < bins[0], bins[0], np.where(df['open_pct_change'] > bins[-1], bins[-1], df['open_pct_change']))
+    
+    df['high_bin'] = pd.cut(df['high_pct_change'], bins=bins)
+    df['high_bin_index'] = pd.cut(df['high_pct_change'], bins=bins, labels=False).astype(int) + 1
+    
+    df['low_bin'] = pd.cut(df['low_pct_change'], bins=bins)
+    df['low_bin_index'] = pd.cut(df['low_pct_change'], bins=bins, labels=False).astype(int) + 1
+    
+    df['open_bin'] = pd.cut(df['open_pct_change'], bins=bins)
+    df['open_bin_index'] = pd.cut(df['open_pct_change'], bins=bins, labels=False).astype(int) + 1
     print(df.head())
     bin_to_index = {str(interval): index + 1 for index, interval in enumerate(df['bin'].cat.categories)}
     bin_index_df = pd.DataFrame(list(bin_to_index.items()), columns=['Interval', 'Index'])

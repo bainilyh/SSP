@@ -8,7 +8,7 @@ def analyze_last_number_distribution(csv_file):
     with open(csv_file, 'r') as file:
         reader = csv.reader(file, delimiter=' ')
         for row in reader:
-            last_numbers.extend(row)
+            last_numbers.append(row[-1])
                 
                         
     

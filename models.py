@@ -9,6 +9,7 @@ class SSP(nn.Module):
                  dropout=0.1, pad_idx=0, max_seq_len=200):
         super(SSP, self).__init__()
 
+        self.max_seq_len = max_seq_len
         self.item_embedding = nn.Embedding(
             n_items, hidden_size, padding_idx=pad_idx)
         self.position_embedding = nn.Embedding(max_seq_len, hidden_size)
@@ -23,7 +24,7 @@ class SSP(nn.Module):
         self.item_prj.weight = self.item_embedding.weight
         self.apply(self._init_weights)
 
-    def forward(self, item_seq):
+    def forward(self, item_seq, need_reshape=True):
         # 1. 位置embedding
         position_ids = torch.arange(item_seq.size(
             1), dtype=torch.long, device=item_seq.device)
@@ -51,6 +52,8 @@ class SSP(nn.Module):
         
         # 7. 投影到item空间
         output = self.item_prj(output)
+        if not need_reshape:
+            return output
 
         return output.view(-1, output.size(2)) # batch_size, n_items
 
