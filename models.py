@@ -22,7 +22,11 @@ class SSP(nn.Module):
         
         self.item_prj = nn.Linear(hidden_size, n_items, bias=False)
         self.item_prj.weight = self.item_embedding.weight
-        self.apply(self._init_weights)
+        
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+        # self.apply(self._init_weights)
 
     def forward(self, item_seq, need_reshape=True):
         # 1. 位置embedding
@@ -60,6 +64,10 @@ class SSP(nn.Module):
     def predict(self, x):
         pass
 
+
+    def print_model_parameters(self):
+        print(self.item_embedding.weight.data[16])
+    
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
             module.weight.data.normal_(mean=0.0, std=0.02)
@@ -172,7 +180,7 @@ class ScaledDotProductAttention(nn.Module):
     def forward(self, q, k, v, mask=None):
         attn = torch.matmul(q / self.temperature, k.transpose(2, 3))
         if mask is not None:
-            attn = attn.masked_fill(mask == 0, -1e9)
+            attn = attn.masked_fill(mask != 0, -1e9)
         attn = self.dropout(F.softmax(attn, dim=-1))
         output = torch.matmul(attn, v)
         return output

@@ -12,6 +12,9 @@ def load_data(file_path):
     conn = sqlite3.connect(file_path)
     sql = 'SELECT * FROM stock_info ORDER BY code, day asc'
     stock_info = pd.read_sql_query(sql, conn)
+    print(f'stock_info.size = {len(stock_info)}')
+    stock_info = stock_info[~((stock_info['close'] == stock_info['open']) & (stock_info['high'] == stock_info['low']) & (stock_info['high'] == stock_info['close']))]
+    print(f'filter stock_info.size = {len(stock_info)}')
     stock_info['pct_change'] = stock_info['close'].pct_change().fillna(0)
     stock_info['high_pct_change'] = (stock_info['high'] - stock_info['close'].shift(1)) / stock_info['close'].shift(1)
     stock_info['high_pct_change'] = stock_info['high_pct_change'].fillna(0)
@@ -38,6 +41,9 @@ def generate_sequences(df, seq_length, seq_interval):
     with open(train_file, 'w') as train_f, open(valid_file, 'w') as valid_f:
         for code, group in df.groupby('code'):
             pct_changes = group['bin_index'].tolist()
+            high_pct_changes = group['high_bin_index'].tolist()
+            low_pct_changes = group['low_bin_index'].tolist()
+            open_pct_changes = group['open_bin_index'].tolist()
             n = len(pct_changes)
             
             sequences = []
@@ -46,7 +52,11 @@ def generate_sequences(df, seq_length, seq_interval):
             for start in range(0, n - seq_length + 1, seq_interval):
                 end = start + seq_length
                 sequence = pct_changes[start:end]
-                sequences.append(sequence)
+                sequence1 = high_pct_changes[start:end]
+                sequence2 = low_pct_changes[start:end]
+                sequence3 = open_pct_changes[start:end]
+                combined_list = ['-'.join(map(str, map(int, items))) for items in zip(sequence, sequence1, sequence2, sequence3)]
+                sequences.append(combined_list)
                 
             
             # 如果至少有一个序列
@@ -70,7 +80,7 @@ def pct_trans(pct):
     return pct
 
 def pct_trans2(df):
-    num_bins = 20
+    num_bins = 10
     df['bin'], bins = pd.qcut(df['pct_change'], q=num_bins, retbins=True, duplicates='drop') 
     print(df['bin'].value_counts().sort_index())
     df['bin_index'] = pd.Categorical(df['bin']).codes + 1
@@ -81,13 +91,13 @@ def pct_trans2(df):
     df['open_pct_change'] = np.where(df['open_pct_change'] < bins[0], bins[0], np.where(df['open_pct_change'] > bins[-1], bins[-1], df['open_pct_change']))
     
     df['high_bin'] = pd.cut(df['high_pct_change'], bins=bins)
-    df['high_bin_index'] = pd.cut(df['high_pct_change'], bins=bins, labels=False).astype(int) + 1
+    df['high_bin_index'] = pd.cut(df['high_pct_change'], bins=bins, labels=False) + 1
     
     df['low_bin'] = pd.cut(df['low_pct_change'], bins=bins)
-    df['low_bin_index'] = pd.cut(df['low_pct_change'], bins=bins, labels=False).astype(int) + 1
+    df['low_bin_index'] = pd.cut(df['low_pct_change'], bins=bins, labels=False)+ 1
     
     df['open_bin'] = pd.cut(df['open_pct_change'], bins=bins)
-    df['open_bin_index'] = pd.cut(df['open_pct_change'], bins=bins, labels=False).astype(int) + 1
+    df['open_bin_index'] = pd.cut(df['open_pct_change'], bins=bins, labels=False) + 1
     print(df.head())
     bin_to_index = {str(interval): index + 1 for index, interval in enumerate(df['bin'].cat.categories)}
     bin_index_df = pd.DataFrame(list(bin_to_index.items()), columns=['Interval', 'Index'])
@@ -99,6 +109,6 @@ if __name__ == "__main__":
     file_path = "C:\\Users\\huang\\Downloads\\stock.nfa"
     df = load_data(file_path)
     df =pct_trans2(df)
-    generate_sequences(df, 31, 15)
+    generate_sequences(df, 31, 31)
     print('end')
     
