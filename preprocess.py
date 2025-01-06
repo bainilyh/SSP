@@ -41,9 +41,9 @@ def generate_sequences(df, seq_length, seq_interval):
     with open(train_file, 'w') as train_f, open(valid_file, 'w') as valid_f:
         for code, group in df.groupby('code'):
             pct_changes = group['bin_index'].tolist()
-            high_pct_changes = group['high_bin_index'].tolist()
-            low_pct_changes = group['low_bin_index'].tolist()
-            open_pct_changes = group['open_bin_index'].tolist()
+            # high_pct_changes = group['high_bin_index'].tolist()
+            # low_pct_changes = group['low_bin_index'].tolist()
+            # open_pct_changes = group['open_bin_index'].tolist()
             n = len(pct_changes)
             
             sequences = []
@@ -52,11 +52,12 @@ def generate_sequences(df, seq_length, seq_interval):
             for start in range(0, n - seq_length + 1, seq_interval):
                 end = start + seq_length
                 sequence = pct_changes[start:end]
-                sequence1 = high_pct_changes[start:end]
-                sequence2 = low_pct_changes[start:end]
-                sequence3 = open_pct_changes[start:end]
-                combined_list = ['-'.join(map(str, map(int, items))) for items in zip(sequence, sequence1, sequence2, sequence3)]
-                sequences.append(combined_list)
+                # sequence1 = high_pct_changes[start:end]
+                # sequence2 = low_pct_changes[start:end]
+                # sequence3 = open_pct_changes[start:end]
+                # combined_list = ['-'.join(map(str, map(int, items))) for items in zip(sequence, sequence1, sequence2, sequence3)]
+                # sequences.append(combined_list)
+                sequences.append(sequence)
                 
             
             # 如果至少有一个序列
@@ -109,6 +110,6 @@ if __name__ == "__main__":
     file_path = "C:\\Users\\huang\\Downloads\\stock.nfa"
     df = load_data(file_path)
     df =pct_trans2(df)
-    generate_sequences(df, 31, 31)
+    generate_sequences(df, 31, 30)
     print('end')
     
