@@ -22,7 +22,7 @@ from d2l import torch as d2l
 import re
 
 # 数据
-batch_size, num_steps = 32, 35
+batch_size, num_steps = 512, 35
 
 
 def load_data_time_machine(batch_size, num_steps,
@@ -73,7 +73,7 @@ def read_time_machine():
         lines = f.readlines()
     return [line.strip().split(' ') for line in lines]
     
-train_iter, vocab = load_data_time_machine(batch_size, num_steps, max_tokens=1000000)
+train_iter, vocab = load_data_time_machine(batch_size, num_steps, max_tokens=-1)
 
 print("数据加载完成！")
 # 模型
@@ -114,6 +114,26 @@ class RNNModel(nn.Module):
             return (torch.zeros((self.num_directions * self.rnn.num_layers,batch_size, self.num_hiddens), device=device),
                     torch.zeros(( self.num_directions * self.rnn.num_layers, batch_size, self.num_hiddens), device=device))
 
+
+def predict_ch8(prefix, num_preds, net, vocab, device):
+    """Generate new characters following the `prefix`.
+
+    Defined in :numref:`sec_rnn_scratch`"""
+    state = net.begin_state(batch_size=1, device=device)
+    outputs = [vocab[prefix[0]]]
+    get_input = lambda: d2l.reshape(d2l.tensor(
+        [outputs[-1]], device=device), (1, 1))
+    for y in prefix[1:]:  # Warm-up period
+        _, state = net(get_input(), state)
+        outputs.append(vocab[y])
+    for _ in range(num_preds):  # Predict `num_preds` steps
+        y, state = net(get_input(), state)
+        outputs.append(int(y.argmax(dim=1).reshape(1)))
+    return ' '.join([vocab.idx_to_token[i] for i in outputs])
+
+print('5 5 8 4 1 9 4 4 3 5 5 5 6 5 6 7 3 6 2 5 5 4 9 5 6 8 3 3 3 5 3')
+prefix = ['5', '5', '8', '4', '1', '9', '4', '4', '3', '5', '5', '5', '6', '5', '6', '7', '3', '6', '2', '5', '5', '4', '9', '5', '6', '8', '3', '3']
+
 def train_ch8(net, train_iter, vocab, lr, num_epochs, device,
               use_random_iter=False):
     """Train a model (defined in Chapter 8).
@@ -127,24 +147,23 @@ def train_ch8(net, train_iter, vocab, lr, num_epochs, device,
         updater = torch.optim.SGD(net.parameters(), lr)
     else:
         updater = lambda batch_size: d2l.sgd(net.params, lr, batch_size)
-    predict = lambda prefix: d2l.predict_ch8(prefix, 10, net, vocab, device)
+    predict = lambda prefix: predict_ch8(prefix, 3, net, vocab, device)
     # Train and predict
     for epoch in range(num_epochs):
         ppl, speed = d2l.train_epoch_ch8(
             net, train_iter, loss, updater, device, use_random_iter)
         if (epoch + 1) % 10 == 0:
-            print(predict(['4', '7', '4', '8', '7', '5', '5', '4', '6', '5', '7', '5', '5', '6', '6', '6', '7', '5', '5', '5']) + f'ppl: {ppl:.1f}')
+            print(predict(prefix=prefix) + f' ppl: {ppl:.1f}')
             # animator.add(epoch + 1, [ppl])
     print(f'perplexity {ppl:.1f}, {speed:.1f} tokens/sec on {str(device)}')
-    print(predict(['4', '7', '4', '8', '7', '5', '5', '4', '6', '5', '7', '5', '5', '6', '6', '6', '7', '5', '5', '5']))
-    # print(predict('traveller'))
+    print(predict(prefix))
     
 # 测试
 device = d2l.try_gpu()
 net = RNNModel(rnn_layer, vocab_size=len(vocab))
 net = net.to(device)
-d2l.predict_ch8(['4', '7', '4', '8', '7', '5', '5', '4', '6', '5', '7', '5', '5', '6', '6', '6', '7', '5', '5', '5'], 10, net, vocab, device)
+predict_ch8(prefix, 3, net, vocab, device)
 
 # 训练
-num_epochs, lr = 500, 0.1
+num_epochs, lr = 1000, 0.01
 train_ch8(net, train_iter, vocab, lr, num_epochs, device)

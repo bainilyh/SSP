@@ -110,6 +110,6 @@ if __name__ == "__main__":
     file_path = "C:\\Users\\huang\\Downloads\\stock.nfa"
     df = load_data(file_path)
     df =pct_trans2(df)
-    generate_sequences(df, 31, 30)
+    generate_sequences(df, 31, 1)
     print('end')
     

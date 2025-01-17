@@ -10,6 +10,7 @@ class SSP(nn.Module):
         super(SSP, self).__init__()
 
         self.max_seq_len = max_seq_len
+        self.hidden_size = hidden_size
         self.item_embedding = nn.Embedding(
             n_items, hidden_size, padding_idx=pad_idx)
         self.position_embedding = nn.Embedding(max_seq_len, hidden_size)
@@ -61,8 +62,13 @@ class SSP(nn.Module):
 
         return output.view(-1, output.size(2)) # batch_size, n_items
 
-    def predict(self, x):
-        pass
+    def generate(self, item_seq):
+        dec_output = self.forward(item_seq, need_reshape=True)
+        dec_output = F.softmax(dec_output, dim=-1)
+        beam_size = 2
+        best_k_probs, best_k_idx = dec_output[:, -1, :].topk(beam_size)
+        scores = torch.log(best_k_probs).view(beam_size)
+        return scores
 
 
     def print_model_parameters(self):
