@@ -7,13 +7,13 @@ from talib import *
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 
-def find_positive_after_negative(df, column_name, n_negative=10):
+def find_positive_after_negative(df, macdhist, macdsignal_, n_negative=10):
     """
-    找出大于等于0，且之前n行数据小于0的位置
+    找出大于等于0，且之前n行数据小于0的位置，同时要求第1行macdsignal大于0且第n行macdsignal小于0
     
     参数:
     df: DataFrame
-    column_name: 要检查的列名
+    macdhist: 要检查的列名
     n_negative: 之前需要多少个负数，默认10
     
     返回:
@@ -21,7 +21,8 @@ def find_positive_after_negative(df, column_name, n_negative=10):
     """
     def check_conditions(group):
         # 获取目标列
-        series = group[column_name]
+        series = group[macdhist]
+        macdsignal = group[macdsignal_]
         
         # 创建一个布尔掩码，标记小于0的值
         negative_mask = series < 0
@@ -35,18 +36,29 @@ def find_positive_after_negative(df, column_name, n_negative=10):
         # 将all_negative向前移动一位，这样它就对应于"之前"的n_negative个值
         prev_all_negative = all_negative.shift(1)
         
-        # 同时满足两个条件:当前值>=0且之前n_negative个值<0
-        return current_positive & prev_all_negative
+        # 检查macdsignal的条件:第1行>0且第n行<0
+        signal_conditions = (macdsignal.shift(n_negative-1) > 0) & (macdsignal < 0)
+        
+        # 同时满足三个条件:
+        # 1. 当前值>=0
+        # 2. 之前n_negative个值<0
+        # 3. macdsignal的条件
+        return current_positive & prev_all_negative & signal_conditions
     
     # 按code分组处理
-    result_mask = df.groupby('ts_code').apply(check_conditions).reset_index(level=0, drop=True)
+    result_mask = df.groupby('ts_code', ).apply(check_conditions).reset_index(level=0, drop=True)
     
     return df[result_mask]
 
-file_path = '/Users/bainilyhuang/Downloads/hshqt/src/main/resources/db/tushare.nfa'
+# file_path = '/Users/bainilyhuang/Downloads/hshqt/src/main/resources/db/tushare.nfa'
+file_path = "C:\\Users\\huang\\Downloads\\stock.nfa"
 conn = sqlite3.connect(file_path)
 sql = 'SELECT * FROM daily_stock_info2 ORDER BY ts_code, trade_date asc'
+sql = 'SELECT code as ts_code, day as trade_date, close, open, high, low FROM stock_info where day >= "20200101" and day <= "20221231" ORDER BY code, day asc'
 stock_info = pd.read_sql_query(sql, conn)
+# 添加vol列并设置为0
+stock_info['vol'] = 0
+
 
 # 按code分组计算MACD
 # stock_info['macdhist'] = stock_info.groupby('ts_code', include_groups=False).apply(
@@ -84,10 +96,46 @@ stock_info['macdhist'] = macd_results['macdhist']
 
 # 查找符合条件的行
 # 10-23年数据，共有185271行数据符合条件
-result = find_positive_after_negative(stock_info, 'macdhist', n_negative=10)
+result = find_positive_after_negative(stock_info, 'macdhist', 'macdsignal', n_negative=20)
 
 # 查看result当前行后1个礼拜内有多少stock_info的数据是涨的
 # 计算每个信号后7个交易日的涨跌情况
+def calculate_trading_days_performance2(result_df, stock_info_df, n_days=7):
+    # 合并数据集
+    merge_df = pd.merge(stock_info_df, result_df, on=['ts_code', 'trade_date'], how='left', indicator=True)
+    merge_df = merge_df[['ts_code', 'trade_date', 'close_x', 'open_x', 'high_x', 'low_x', 'macdhist_x', 'macd_x', 'macdsignal_x', '_merge']]
+    merge_df.columns = ['ts_code', 'trade_date', 'close', 'open', 'high', 'low', 'macdhist', 'macd', 'macdsignal', '_merge']
+    
+    # 找到信号行
+    both_rows = merge_df[merge_df['_merge'] == 'both']
+    both_indices = both_rows.index
+    
+    # 为每个信号创建未来n_days天的索引
+    future_indices = np.array([np.arange(idx, min(idx + n_days + 1, len(merge_df))) for idx in both_indices]).flatten()
+    
+    # 一次性选择所有需要的行
+    result_df = merge_df.iloc[future_indices].copy()
+    
+    # 为每组数据添加对应的初始收盘价
+    result_df['group'] = np.repeat(both_indices, [min(n_days + 1, len(merge_df) - idx) for idx in both_indices])
+    initial_closes = merge_df.iloc[both_indices]['close'].values
+    result_df['initial_close'] = initial_closes[result_df['group'].map(lambda x: both_indices.get_loc(x))]
+    
+    # 计算变化率
+    result_df['change_ratio'] = (result_df['close'] - result_df['initial_close']) / result_df['initial_close']
+    
+    # 为每个ts_code的both添加从0开始的行号
+    result_df['row'] = result_df.groupby(['ts_code', result_df['group']]).cumcount()
+    
+    # 删除辅助列
+    result_df.drop(['group', 'initial_close'], axis=1, inplace=True)
+    result_df.reset_index(drop=True, inplace=True)
+    
+    return result_df
+
+
+result_df = calculate_trading_days_performance2(result, stock_info)
+
 def calculate_trading_days_performance(result_df, stock_info_df):
     # 为每个股票创建一个序号列,用于后续join
     stock_info_df = stock_info_df.copy()
@@ -156,7 +204,10 @@ def calculate_trading_days_performance(result_df, stock_info_df):
     return result_df
 
 # 计算性能统计
-result = calculate_trading_days_performance(result, stock_info)
+# result = calculate_trading_days_performance(result, stock_info)
+
+# condition = ''
+# df_sorted_desc = result_df[condition].sort_values(by='change_ratio', ascending=False)
 
 def plot_candlestick(df, ts_code, trade_date, n_before=20, n_after=10):
     """
@@ -176,16 +227,19 @@ def plot_candlestick(df, ts_code, trade_date, n_before=20, n_after=10):
     target_date = pd.to_datetime(trade_date)
     stock_df['trade_date'] = pd.to_datetime(stock_df['trade_date'])
     
-    # 找到目标日期的索引
+    # 找到目标日期的索引 
     target_idx = stock_df[stock_df['trade_date'] == target_date].index[0]
     
     # 获取目标日期前后的数据
     start_idx = max(0, target_idx - n_before)
-    end_idx = min(len(stock_df), target_idx + n_after + 1)
-    plot_df = stock_df.iloc[start_idx:end_idx].copy()
+    end_idx = min(len(df), target_idx + n_after + 1)
+    plot_df = df.iloc[start_idx:end_idx].copy()
     
     # 设置索引为日期
     plot_df.set_index('trade_date', inplace=True)
+    
+    # 确保索引是DatetimeIndex
+    plot_df.index = pd.to_datetime(plot_df.index)
     
     # 准备绘图数据
     plot_data = plot_df[['open', 'high', 'low', 'close', 'vol']]
@@ -194,6 +248,7 @@ def plot_candlestick(df, ts_code, trade_date, n_before=20, n_after=10):
     # 设置标记点
     dates = set([target_date])
     signal = [plot_data.loc[date]['High'] if date in dates else np.nan for date in plot_data.index]
+    signal = np.array(signal)
     
     # 设置绘图参数
     kwargs = dict(
@@ -221,26 +276,32 @@ def plot_candlestick(df, ts_code, trade_date, n_before=20, n_after=10):
     )
     
     # 添加收盘价线、MACD指标和标记点
-    close_plot = mpf.make_addplot(plot_data['Close'], color='black', width=0.8)
+    close_plot = mpf.make_addplot(plot_data['Close'].to_numpy(), color='black', width=0.8)
     
     # 分别处理MACD柱状图的正负值
-    hist_pos = plot_df['macdhist'].copy()
-    hist_neg = plot_df['macdhist'].copy()
+    hist_pos = plot_df['macdhist'].to_numpy().copy()
+    hist_neg = plot_df['macdhist'].to_numpy().copy()
     hist_pos[hist_pos <= 0] = np.nan
     hist_neg[hist_neg > 0] = np.nan
     
     # 添加MACD指标
     macd_hist_pos = mpf.make_addplot(hist_pos, type='bar', width=0.7, panel=2, color='red')
     macd_hist_neg = mpf.make_addplot(hist_neg, type='bar', width=0.7, panel=2, color='green')
-    macd_line = mpf.make_addplot(plot_df['macd'], panel=2, color='blue', width=0.8)
-    signal_line = mpf.make_addplot(plot_df['macdsignal'], panel=2, color='orange', width=0.8)
+    macd_line = mpf.make_addplot(plot_df['macd'].to_numpy(), panel=2, color='blue', width=0.8)
+    signal_line = mpf.make_addplot(plot_df['macdsignal'].to_numpy(), panel=2, color='orange', width=0.8)
     
     signal_plot = mpf.make_addplot(signal, type='scatter', markersize=200, marker='v')
     plots = [close_plot, macd_hist_pos, macd_hist_neg, macd_line, signal_line, signal_plot]
+    
+    # 检查 DataFrame 是否为空
+    if plot_df.empty:
+        print(f"没有可用的数据用于 {ts_code} 在 {trade_date}。")
+        return
     
     # 绘制图表
     mpf.plot(plot_data, **kwargs, style=style, addplot=plots)
 
 # 使用示例:
-plot_candlestick(stock_info, '000001.SZ', '20220321', 30, 30)
+plot_candlestick(stock_info, 'sz000001', '2022-03-21', 30, 30)
+print('end')
 
