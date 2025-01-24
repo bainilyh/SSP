@@ -7,7 +7,7 @@ from talib import *
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 
-def find_positive_after_negative(df, macdhist, macdsignal_, n_negative=10):
+def find_positive_after_negative(df, macdhist, macdsignal_, n_negative=10, n_days=7):
     """
     找出大于等于0，且之前n行数据小于0的位置，同时要求第1行macdsignal大于0且第n行macdsignal小于0
     
@@ -20,9 +20,14 @@ def find_positive_after_negative(df, macdhist, macdsignal_, n_negative=10):
     符合条件的行索引
     """
     def check_conditions(group):
+        if group['ts_code'].unique()[0] == '300988.SZ':
+            print()
         # 获取目标列
         series = group[macdhist]
         macdsignal = group[macdsignal_]
+        
+        # 检查pre_close和前一天close是否相等
+        close_match = (group['pre_close'] == group['close'].shift(1))
         
         # 创建一个布尔掩码，标记小于0的值
         negative_mask = series < 0
@@ -39,25 +44,33 @@ def find_positive_after_negative(df, macdhist, macdsignal_, n_negative=10):
         # 检查macdsignal的条件:第1行>0且第n行<0
         signal_conditions = (macdsignal.shift(n_negative-1) > 0) & (macdsignal < 0)
         
-        # 同时满足三个条件:
+        close_match = close_match.rolling(window=n_negative).sum() == n_negative
+        pre_close_match = close_match.shift(1)
+        after_close_match = close_match.shift(-n_days)
+        
+        # 检查当前close是否大于n_negative天前的close
+        close_price_condition = group['close'] < group['close'].shift(n_negative)
+        
+        # 同时满足所有条件:
         # 1. 当前值>=0
         # 2. 之前n_negative个值<0
         # 3. macdsignal的条件
-        return current_positive & prev_all_negative & signal_conditions
+        # 4. pre_close与前一日close相等且在整个周期内都匹配
+        # 5. 当前close大于n_negative天前的close
+        return current_positive & prev_all_negative & pre_close_match & after_close_match & close_price_condition
     
     # 按code分组处理
-    result_mask = df.groupby('ts_code', ).apply(check_conditions).reset_index(level=0, drop=True)
+    result_mask = df.groupby('ts_code').apply(check_conditions).reset_index(level=0, drop=True)
     
     return df[result_mask]
 
 # file_path = '/Users/bainilyhuang/Downloads/hshqt/src/main/resources/db/tushare.nfa'
 file_path = "C:\\Users\\huang\\Downloads\\stock.nfa"
 conn = sqlite3.connect(file_path)
-sql = 'SELECT * FROM daily_stock_info2 ORDER BY ts_code, trade_date asc'
-sql = 'SELECT code as ts_code, day as trade_date, close, open, high, low FROM stock_info where day >= "20200101" and day <= "20221231" ORDER BY code, day asc'
+sql = 'SELECT * FROM stock_info_daily ORDER BY ts_code, trade_date asc'
+# sql = 'SELECT code as ts_code, day as trade_date, close, open, high, low FROM stock_info where day >= "20200101" and day <= "20221231" ORDER BY code, day asc'
 stock_info = pd.read_sql_query(sql, conn)
-# 添加vol列并设置为0
-stock_info['vol'] = 0
+
 
 
 # 按code分组计算MACD
@@ -258,7 +271,7 @@ def plot_candlestick(df, ts_code, trade_date, n_before=20, n_after=10):
         figratio=(28, 16),
         datetime_format='%Y-%m-%d',
         volume_panel=1,
-        title=f'\n{ts_code} K线图',
+        title=f'\n{ts_code}',
         # 删除这些参数，因为它们将通过style对象设置
         # style='charles',
         # gridstyle='--',
@@ -302,6 +315,49 @@ def plot_candlestick(df, ts_code, trade_date, n_before=20, n_after=10):
     mpf.plot(plot_data, **kwargs, style=style, addplot=plots)
 
 # 使用示例:
-plot_candlestick(stock_info, 'sz000001', '2022-03-21', 30, 30)
+# plot_candlestick(stock_info, '000619.SZ', '20220721', 30, 30)
 print('end')
 
+# 测试
+condition = (result_df['row'] == 7)
+condition2 = (result_df['row'] == 7) & ((result_df['change_ratio'] > 0))
+
+len(result_df[condition2]) / len(result_df[condition])
+
+df_sorted_desc = result_df[condition].sort_values(by='change_ratio', ascending=True)
+
+a = (stock_info['ts_code'] == '300988.SZ') & (stock_info['trade_date'] > '20220501') & (stock_info['trade_date'] < '20220525')
+
+
+# pd.io.sql.to_sql(stock_info, name='tqa_info', con=conn, if_exists='append', index=False)
+# sql = "select * from condition1"
+# con1 = pd.read_sql_query(sql, conn)
+
+def find_diff_merge(a, b):
+    # 首先确保两个DataFrame都没有'_merge'列
+    if '_merge' in a.columns:
+        a = a.drop('_merge', axis=1)
+    if '_merge' in b.columns:
+        b = b.drop('_merge', axis=1)
+    
+    result = pd.merge(a, b, 
+                     on=['ts_code', 'trade_date'], 
+                     how='left', 
+                     indicator=True)
+    return result[result['_merge'] == 'left_only'].drop('_merge', axis=1)
+
+
+
+# cols_to_drop = [col for col in a.columns if col.endswith('_y')]
+# a = a.drop(columns=cols_to_drop)
+# a.columns = [col[:-2] if col.endswith('_x') else col for col in a.columns]
+
+
+# # 设置显示所有列
+# pd.set_option('display.max_columns', None)
+# # 设置显示所有行
+# pd.set_option('display.max_rows', None)
+# # 设置value的显示长度为100，默认为50
+# pd.set_option('display.max_colwidth', 100)
+# # 设置显示宽度为None，即不限制宽度
+# pd.set_option('display.width', None)

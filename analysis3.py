@@ -6,6 +6,9 @@ import math
 from talib import *
 import mplfinance as mpf
 import matplotlib.pyplot as plt
+import tushare as ts
+
+
 
 def calculate_trading_days_performance2(result_df, stock_info_df, n_days=7):
     # 合并数据集
@@ -39,3 +42,26 @@ def calculate_trading_days_performance2(result_df, stock_info_df, n_days=7):
     result_df.reset_index(drop=True, inplace=True)
     
     return result_df
+
+def get_daily_info(data, start_day, end_day):
+    ts.set_token('f55086b7b9a5de7a4d04405ab77085004596d1484d6fb7e437334d0d')
+    pro = ts.pro_api()
+    
+    # 创建列表存储所有有效的DataFrame
+    dfs = []
+    
+    # 遍历data中的每个股票代码
+    for ts_code in data['ts_code'].unique():
+        try:
+            # 获取单个股票的数据
+            df = pro.daily(ts_code=ts_code, start_date=start_day, end_date=end_day)
+            if not df.empty:  # 只添加非空的DataFrame
+                dfs.append(df)
+        except Exception as e:
+            print(f"获取{ts_code}数据时出错: {str(e)}")
+            continue
+    
+    # 最后一次性连接所有有效的DataFrame
+    all_data = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+    
+    return all_data
