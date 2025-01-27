@@ -315,7 +315,7 @@ def plot_candlestick(df, ts_code, trade_date, n_before=20, n_after=10):
     mpf.plot(plot_data, **kwargs, style=style, addplot=plots)
 
 # 使用示例:
-# plot_candlestick(stock_info, '000619.SZ', '20220721', 30, 30)
+# plot_candlestick(stock_info, '002992.SZ', '20221102', 30, 30)
 print('end')
 
 # 测试

@@ -73,18 +73,23 @@ stock_info = pd.read_sql_query(sql, conn)
 # ).reset_index(level=0, drop=True)
 
 def calculate_macd_and_vol_ma(group):
-    """同时计算MACD和成交量MA以减少分组操作次数"""
+    """同时计算MACD、成交量MA和布林线指标以减少分组操作次数"""
     try:
         # 计算MACD
         macd, signal, hist = MACD(group['close'], fastperiod=12, slowperiod=26, signalperiod=9)
         # 计算成交量MA 
         vol_ma = EMA(group['vol'], timeperiod=7)
+        # 计算布林线
+        upperband, middleband, lowerband = BBANDS(group['close'], timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
         
         return pd.DataFrame({
             'macd': macd,
             'macdsignal': signal, 
             'macdhist': hist,
-            'vol_ma': vol_ma
+            'vol_ma': vol_ma,
+            'upperband': upperband,
+            'middleband': middleband,
+            'lowerband': lowerband
         }, index=group.index)
     except Exception as e:
         # 返回相同长度的NaN值
@@ -93,7 +98,10 @@ def calculate_macd_and_vol_ma(group):
             'macd': [np.nan] * length,
             'macdsignal': [np.nan] * length,
             'macdhist': [np.nan] * length,
-            'vol_ma': [np.nan] * length
+            'vol_ma': [np.nan] * length,
+            'upperband': [np.nan] * length,
+            'middleband': [np.nan] * length,
+            'lowerband': [np.nan] * length
         }, index=group.index)
 
 # 只需要一次分组操作计算所有指标
@@ -101,7 +109,7 @@ results = stock_info.groupby('ts_code', group_keys=False).apply(calculate_macd_a
 results = results.reset_index(level=0, drop=True)
 
 # 一次性将所有结果赋值给原始DataFrame
-stock_info[['macd', 'macdsignal', 'macdhist', 'vol_ma']] = results[['macd', 'macdsignal', 'macdhist', 'vol_ma']]
+stock_info[['macd', 'macdsignal', 'macdhist', 'vol_ma', 'upperband', 'middleband', 'lowerband']] = results[['macd', 'macdsignal', 'macdhist', 'vol_ma', 'upperband', 'middleband', 'lowerband']]
 
 # 查找符合条件的行
 # 10-23年数据，共有185271行数据符合条件
@@ -213,6 +221,9 @@ def plot_candlestick(df, ts_code, trade_date, n_before=20, n_after=10, n_rows=7,
     # 构建所有addplot对象
     plots = [
         mpf.make_addplot(plot_data['Close'], color='black', width=0.8),
+        mpf.make_addplot(plot_df['middleband'], color='blue', width=1),
+        mpf.make_addplot(plot_df['upperband'], color='gray', width=1),
+        mpf.make_addplot(plot_df['lowerband'], color='gray', width=1),
         mpf.make_addplot(hist_pos, type='bar', width=0.7, panel=2, color='red'),
         mpf.make_addplot(hist_neg, type='bar', width=0.7, panel=2, color='green'),
         mpf.make_addplot(plot_df['macd'], panel=2, color='blue', width=0.8),
