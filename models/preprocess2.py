@@ -437,10 +437,10 @@ def add_volume_features(df):
     DataFrame: 添加成交量特征后的DataFrame
     """
     def process_group(group):
-        # 1. 基础成交量移动平均
-        ma_periods = [3, 5, 10, 20, 30, 60]
+        # 1. 基础成交量移动平均，使用talib中ma接口计算移动平均
+        ma_periods = [3, 5, 10, 20, 30]
         for period in ma_periods:
-            group[f'vol_ma{period}'] = group['vol'].rolling(window=period).mean()
+            group[f'vol_ma{period}'] = talib.MA(group['vol'], timeperiod=period)
             # 相对于移动平均的成交量比
             group[f'vol_ma{period}_ratio'] = group['vol'] / group[f'vol_ma{period}']
         
@@ -451,16 +451,16 @@ def add_volume_features(df):
         group['vol_acc'] = group['vol_change'].pct_change()
         
         # 3. 成交量波动性特征
-        # 成交量标准差
-        group['vol_std_20'] = group['vol'].rolling(window=20).std()
-        # 成交量波动率
+        # 使用talib的STDDEV接口计算成交量标准差
+        group['vol_std_20'] = talib.STDDEV(group['vol'], timeperiod=20)
+        # 使用talib计算的成交量标准差除以MA20得到成交量波动率
         group['vol_std_ratio_20'] = group['vol_std_20'] / group['vol_ma20']
         
         # 4. 价格成交量相关性特征
         # 计算价格变化
         group['price_change'] = group['close'].pct_change()
-        # 价格成交量相关系数
-        group['price_vol_corr'] = group['price_change'].rolling(20).corr(group['vol_change'])
+        # 价格成交量相关系数，使用talib中的皮尔逊相关系数计算
+        group['price_vol_corr'] = talib.CORREL(group['price_change'], group['vol_change'], timeperiod=20)
         
         # 5. 成交量分布特征
         # 计算相对于过去N日的成交量分位数
@@ -622,63 +622,4 @@ def normalize_stock_prices(df, price_cols=['open', 'high', 'low', 'close', 'pre_
 
 
 if __name__ == '__main__':
-    print('加载 数据')
-    stock_info = load_stock_data(table_name='daily_info', file_path='./data/train.nfa')
-    print('设置标签')
-    stock_info = label_price_changes(stock_info)
-    # save_stock_data(stock_info, 'stock_info_with_lable')
-    print('分析标签分布')
-    stats = analyze_label_distribution(stock_info)
-    print(stats)
-    # 进行归一化处理
-    print('进行归一化处理')
-    stock_info = normalize_stock_prices(stock_info)
-    # 查看结果
-    print("\n归一化结果示例:")
-    sample_stock = stock_info['ts_code'].iloc[0]
-    print(stock_info[stock_info['ts_code'] == sample_stock].head())
     
-    # # 检查拆分情况
-    # split_example = normalized_df.groupby('ts_code').filter(
-    #     lambda x: x['ts_code_split'].nunique() > 1
-    # ).head(10)
-    # print("\n拆分示例:")
-    # print(split_example[['ts_code', 'trade_date', 'ts_code_split', 'close', 'close_norm']])
-    
-    print('添加技术指标')
-    stock_info = add_technical_indicators(stock_info)
-    print('存储技术指标')
-    save_stock_data(stock_info, 'technical_indicators_info', file_path='./data/train.nfa', mode='append')
-    print('预处理数据')
-    preprocess_data(stock_info)
-    print('完成')
-    # print(stock_info.head())
-    # stock_info = load_stock_data(table_name='stock_info_with_technical_indicators')
-    # plot_random_positive_samples(stock_info, n_samples=100)
-    
-    # # 获取最新记录
-    # latest_records = get_latest_records(stock_info, n=6)
-    # print("\n最新记录示例:")
-    # print(latest_records[['ts_code', 'trade_date', 'close', 'label']].head())
-    
-    # # 分析标签分布
-    # label_stats = analyze_label_distribution(latest_records)
-    # print("\n标签分布统计:")
-    # print(label_stats)
-
-    # # 过滤正样本
-    # filtered_stock_info = filter_positive_samples(latest_records)
-    # print("\n过滤后的标签分布统计:")
-    # print(analyze_label_distribution(filtered_stock_info))
-
-    # # 增强数据质量
-    # train_df, eval_df = enhance_data_quality(latest_records)
-    # print("\n增强后的标签分布统计:")
-    # print(analyze_label_distribution(train_df))
-    # print(analyze_label_distribution(eval_df))
-
-
-    # pd.set_option('display.max_info_columns', 200) 
-    
-    # key = Fernet.generate_key()
-    # b'FT248o1y-EYWal2Uy0m4ulH8uBNhS3ETmibNR3RVsew='
