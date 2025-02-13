@@ -156,188 +156,164 @@ def save_stock_data(stock_info, table_name, file_path='./data/train.nfa', mode='
     conn.close()
 
 
+def detect_ma_crossovers(group, ma_ratio):
+    """
+    检测均线穿越1的反转点并计算距离上一个反转点的天数
+    
+    参数:
+    group: DataFrame, 包含股票数据的一个分组
+    ma_ratio: Series, 均线比率序列(如ratio_ma7_close)
+    
+    返回:
+    reversal_points: Series, 反转点标记（1表示向上穿越，-1表示向下穿越，0表示非反转点）
+    days_since_last_reversal: Series, 距离上一个反转点的天数
+    """
+    # 初始化反转点序列
+    reversal_points = pd.Series(0, index=group.index)
+    
+    # 获取前一日的ratio值
+    prev_ratio = ma_ratio.shift(1)
+    
+    # 检测向上穿越1的点和向下穿越1的点
+    up_cross = (prev_ratio < 1) & (ma_ratio >= 1)
+    down_cross = (prev_ratio > 1) & (ma_ratio <= 1)
+    
+    # 分别标记向上和向下穿越点
+    reversal_points[up_cross] = 1
+    reversal_points[down_cross] = -1
+    
+    # 使用abs(reversal_points)来创建分组标识，这样向上和向下穿越点都会开始新的分组
+    group_id = (abs(reversal_points) > 0).cumsum()
+    
+    # 计算距离天数（向量化操作）
+    # 1. 创建一个布尔掩码，标识非零的group_id
+    valid_groups = group_id > 0
+    
+    # 2. 为每个有效组创建一个累计计数
+    days_since_last_reversal = pd.Series(0, index=group.index)
+    if valid_groups.any():
+        # 对每个组内进行累计计数
+        days_since_last_reversal[valid_groups] = (
+            group_id[valid_groups]
+            .map(group_id[valid_groups].groupby(group_id[valid_groups]).cumcount())
+        )
+    
+    return reversal_points, days_since_last_reversal
+
+
 def calculate_technical_indicators(group):
     """
-    天数间隔：[3, 5, 10, 20, 30, 60]
+    计算技术指标
+    
+    参数:
+    group: DataFrame, 包含股票数据的一个分组，需要包含 OHLCV 数据
+    
+    返回:
+    DataFrame: 包含计算出的技术指标
     """
     try:
-        # 成交量指标
-        vol_ma = talib.EMA(group['vol'], timeperiod=7)
-        
-        # ===== 重叠研究指标 =====
-        # 布林带
-        upper, middle, lower = talib.BBANDS(group['close'], timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
-        # 双指数移动平均线
-        dema = talib.DEMA(group['close'], timeperiod=30)
-        # 指数移动平均线
-        ema = talib.EMA(group['close'], timeperiod=30)
-        # 希尔伯特变换瞬时趋势
-        trendline = talib.HT_TRENDLINE(group['close'])
-        # 卡玛考夫曼自适应移动平均
-        kama = talib.KAMA(group['close'], timeperiod=30)
-        # 移动平均线
+        # ===== 基础移动平均线 =====
         ma7 = talib.MA(group['close'], timeperiod=7)
-        ma13 = talib.MA(group['close'], timeperiod=13)
-        ma26 = talib.MA(group['close'], timeperiod=26)
-        # MESA自适应移动平均
-        mama, fama = talib.MAMA(group['close'])
-        # 中点价格
+        ma14 = talib.MA(group['close'], timeperiod=14)
+        ma30 = talib.MA(group['close'], timeperiod=30)
+        
+        # ===== 布林带指标 =====
+        upper, middle, lower = talib.BBANDS(group['close'], timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
+        
+        # ===== MACD指标 =====
+        macd, macdsignal, macdhist = talib.MACD(group['close'], fastperiod=12, slowperiod=26, signalperiod=9)
+        
+        # ===== 中点和中间价格 =====
         midpoint = talib.MIDPOINT(group['close'], timeperiod=14)
-        # 中间价格
         midprice = talib.MIDPRICE(group['high'], group['low'], timeperiod=14)
-        # 抛物线转向指标
-        sar = talib.SAR(group['high'], group['low'])
-        # 抛物线转向指标扩展
-        sarext = talib.SAREXT(group['high'], group['low'])
-        # 简单移动平均线
-        sma = talib.SMA(group['close'], timeperiod=30)
-        # 三重指数移动平均线
-        t3 = talib.T3(group['close'], timeperiod=5)
-        # 三重指数移动平均
-        tema = talib.TEMA(group['close'], timeperiod=30)
-        # 三角移动平均
-        trima = talib.TRIMA(group['close'], timeperiod=30)
-        # 加权移动平均
-        wma = talib.WMA(group['close'], timeperiod=30)
         
         # ===== 动量指标 =====
         adx = talib.ADX(group['high'], group['low'], group['close'], timeperiod=14)
         adxr = talib.ADXR(group['high'], group['low'], group['close'], timeperiod=14)
-        apo = talib.APO(group['close'], fastperiod=12, slowperiod=26, matype=0)
-        aroondown, aroonup = talib.AROON(group['high'], group['low'], timeperiod=14)
-        aroonosc = talib.AROONOSC(group['high'], group['low'], timeperiod=14)
-        bop = talib.BOP(group['open'], group['high'], group['low'], group['close'])
-        cci = talib.CCI(group['high'], group['low'], group['close'], timeperiod=14)
-        cmo = talib.CMO(group['close'], timeperiod=14)
-        dx = talib.DX(group['high'], group['low'], group['close'], timeperiod=14)
-        macd, macdsignal, macdhist = talib.MACD(group['close'], fastperiod=12, slowperiod=26, signalperiod=9)
-        macdext, macdextsignal, macdexthist = talib.MACDEXT(group['close'], fastperiod=12, fastmatype=0, slowperiod=26, slowmatype=0, signalperiod=9, signalmatype=0)
-        macdfix, macdfixsignal, macdfixhist = talib.MACDFIX(group['close'], signalperiod=9)
-        mfi = talib.MFI(group['high'], group['low'], group['close'], group['vol'], timeperiod=14)
-        minus_di = talib.MINUS_DI(group['high'], group['low'], group['close'], timeperiod=14)
-        minus_dm = talib.MINUS_DM(group['high'], group['low'], timeperiod=14)
-        mom = talib.MOM(group['close'], timeperiod=10)
-        plus_di = talib.PLUS_DI(group['high'], group['low'], group['close'], timeperiod=14)
-        plus_dm = talib.PLUS_DM(group['high'], group['low'], timeperiod=14)
-        ppo = talib.PPO(group['close'], fastperiod=12, slowperiod=26, matype=0)
-        roc = talib.ROC(group['close'], timeperiod=10)
-        rocp = talib.ROCP(group['close'], timeperiod=10)
-        rocr = talib.ROCR(group['close'], timeperiod=10)
-        rocr100 = talib.ROCR100(group['close'], timeperiod=10)
-        rsi = talib.RSI(group['close'], timeperiod=14)
-        slowk, slowd = talib.STOCH(group['high'], group['low'], group['close'], fastk_period=5, slowk_period=3, slowk_matype=0, slowd_period=3, slowd_matype=0)
-        fastk, fastd = talib.STOCHF(group['high'], group['low'], group['close'], fastk_period=5, fastd_period=3, fastd_matype=0)
-        fastk_rsi, fastd_rsi = talib.STOCHRSI(group['close'], timeperiod=14, fastk_period=5, fastd_period=3, fastd_matype=0)
-        trix = talib.TRIX(group['close'], timeperiod=30)
-        ultosc = talib.ULTOSC(group['high'], group['low'], group['close'], timeperiod1=7, timeperiod2=14, timeperiod3=28)
-        willr = talib.WILLR(group['high'], group['low'], group['close'], timeperiod=14)
         
-        # 波动率指标
-        atr = talib.ATR(group['high'], group['low'], group['close'], timeperiod=14)
-        natr = talib.NATR(group['high'], group['low'], group['close'], timeperiod=14)
+        # ===== 成交量特征 =====
+        ma_periods = [3, 7, 14, 20]
+        vol_features = {}
+        for period in ma_periods:
+            vol_ma = talib.MA(group['vol'], timeperiod=period)
+            vol_features[f'vol_ma{period}'] = vol_ma
+            vol_features[f'vol_ma{period}_ratio'] = group['vol'] / vol_ma
         
-        # ===== 成交量指标 =====
-        # Chaikin A/D Line - 累积派发线
-        ad = talib.AD(group['high'], group['low'], group['close'], group['vol'])
+        # 成交量趋势特征
+        vol_features['vol_change'] = group['vol'].pct_change()
+        vol_features['vol_acc'] = vol_features['vol_change'].pct_change()
         
-        # Chaikin A/D Oscillator - 佳庆振荡器
-        adosc = talib.ADOSC(group['high'], group['low'], group['close'], group['vol'], 
-                           fastperiod=3, slowperiod=10)
+        # 成交量波动性特征
+        vol_features['vol_std_20'] = talib.STDDEV(group['vol'], timeperiod=20)
+        vol_features['vol_std_ratio_20'] = vol_features['vol_std_20'] / vol_features['vol_ma20']
         
-        # On Balance Volume - 能量潮
-        obv = talib.OBV(group['close'], group['vol'])
+        # 价格成交量相关性
+        price_change = group['close'].pct_change()
+        vol_features['price_vol_corr'] = talib.CORREL(price_change, vol_features['vol_change'], timeperiod=20)
         
-        # ===== 周期指标 =====
-        # 希尔伯特变换 - 主导周期
-        dcperiod = talib.HT_DCPERIOD(group['close'])
+        # ===== 相对特征 =====
+        # 计算斜率
+        close_slope = talib.LINEARREG_SLOPE(group['close'], timeperiod=7)
+        ma7_slope = talib.LINEARREG_SLOPE(ma7, timeperiod=7)
         
-        # 希尔伯特变换 - 主导周期相位
-        dcphase = talib.HT_DCPHASE(group['close'])
+        # 均线比率
+        ratio_features = {
+            'ratio_ma7_close': ma7 / group['close'],
+            'ratio_ma14_close': ma14 / group['close'],
+            'ratio_ma30_close': ma30 / group['close'],
+            'ratio_ma7_ma14': ma7 / ma14,
+            'ratio_ma7_ma30': ma7 / ma30,
+            'ratio_ma14_ma30': ma14 / ma30
+        }
         
-        # 希尔伯特变换 - 相量分量
-        inphase, quadrature = talib.HT_PHASOR(group['close'])
+        # 计算反转点和距离天数
+        reversal_features = {}
+        for period, ratio in [('7', ratio_features['ratio_ma7_close']), 
+                            ('14', ratio_features['ratio_ma14_close']), 
+                            ('30', ratio_features['ratio_ma30_close'])]:
+            rev_points, days_since = detect_ma_crossovers(group, ratio)
+            reversal_features[f'ma{period}_reversal'] = rev_points
+            reversal_features[f'ma{period}_days_since_reversal'] = days_since
         
-        # 希尔伯特变换 - 正弦波
-        sine, leadsine = talib.HT_SINE(group['close'])
+        # 布林带相对特征
+        bb_features = {
+            'ratio_upper_close': upper / group['close'],
+            'ratio_middle_close': middle / group['close'],
+            'ratio_lower_close': lower / group['close'],
+            'bb_width': (upper - lower) / middle,
+            'bb_position': (group['close'] - lower) / (upper - lower)
+        }
         
-        # 希尔伯特变换 - 趋势/周期模式
-        trendmode = talib.HT_TRENDMODE(group['close'])
-        
-        return pd.DataFrame({
+        # 合并所有特征
+        result_df = pd.DataFrame({
+            # 基础指标
             'macd': macd, 'macdsignal': macdsignal, 'macdhist': macdhist,
-            'vol_ma': vol_ma, 'upperband': upper, 'middleband': middle, 
-            'lowerband': lower, 'dema': dema, 'ema': ema, 'trendline': trendline,
-            'kama': kama, 'ma7': ma7, 'ma13': ma13, 'ma26': ma26,
-            'mama': mama, 'fama': fama, 'midpoint': midpoint, 'midprice': midprice,
-            'sar': sar, 'sarext': sarext, 'sma': sma, 't3': t3, 'tema': tema,
-            'trima': trima, 'wma': wma,
-            # 动量指标
-            'adx': adx, 'adxr': adxr, 'apo': apo, 'aroondown': aroondown,
-            'aroonup': aroonup, 'aroonosc': aroonosc, 'bop': bop, 'cci': cci,
-            'cmo': cmo, 'dx': dx, 'macdext': macdext, 'macdextsignal': macdextsignal,
-            'macdexthist': macdexthist, 'macdfix': macdfix, 'macdfixsignal': macdfixsignal,
-            'macdfixhist': macdfixhist, 'mfi': mfi, 'minus_di': minus_di,
-            'minus_dm': minus_dm, 'mom': mom, 'plus_di': plus_di, 'plus_dm': plus_dm,
-            'ppo': ppo, 'roc': roc, 'rocp': rocp, 'rocr': rocr, 'rocr100': rocr100,
-            'rsi': rsi, 'slowk': slowk, 'slowd': slowd, 'fastk': fastk, 'fastd': fastd,
-            'fastk_rsi': fastk_rsi, 'fastd_rsi': fastd_rsi, 'trix': trix,
-            'ultosc': ultosc, 'willr': willr,
-            # 波动率指标
-            'atr': atr, 'natr': natr,
-            # 新增成交量指标
-            'ad': ad, 'adosc': adosc, 'obv': obv,
-            # 新增周期指标
-            'dcperiod': dcperiod,
-            'dcphase': dcphase,
-            'inphase': inphase,
-            'quadrature': quadrature,
-            'sine': sine,
-            'leadsine': leadsine,
-            'trendmode': trendmode,
-            
+            'ma7': ma7, 'ma14': ma14, 'ma30': ma30,
+            'midpoint': midpoint, 'midprice': midprice,
+            'adx': adx, 'adxr': adxr,
+            'close_slope': close_slope,
+            'ma7_slope': ma7_slope,
+            **vol_features,
+            **ratio_features,
+            **reversal_features,
+            **bb_features
         })
         
+        return result_df
+        
     except Exception as e:
-        # 异常时返回NaN值
-        length = len(group)
-        columns = ['macd', 'macdsignal', 'macdhist', 'vol_ma', 'upperband',
-                  'middleband', 'lowerband', 'dema', 'ema', 'trendline', 'kama',
-                  'ma7', 'ma13', 'ma26', 'mama', 'fama', 'midpoint', 'midprice',
-                  'sar', 'sarext', 'sma', 't3', 'tema', 'trima', 'wma',
-                  'adx', 'adxr', 'apo', 'aroondown', 'aroonup', 'aroonosc', 'bop',
-                  'cci', 'cmo', 'dx', 'macdext', 'macdextsignal', 'macdexthist',
-                  'macdfix', 'macdfixsignal', 'macdfixhist', 'mfi', 'minus_di',
-                  'minus_dm', 'mom', 'plus_di', 'plus_dm', 'ppo', 'roc', 'rocp',
-                  'rocr', 'rocr100', 'rsi', 'slowk', 'slowd', 'fastk', 'fastd',
-                  'fastk_rsi', 'fastd_rsi', 'trix', 'ultosc', 'willr', 'atr', 'natr',
-                  # 新增成交量指标到异常处理列表
-                  'ad', 'adosc', 'obv',
-                  # 新增周期指标到异常处理列表
-                  'dcperiod', 'dcphase', 'inphase', 'quadrature',
-                  'sine', 'leadsine', 'trendmode',
-                  # 新增形态识别指标到异常处理列表
-                  'cdl2crows', 'cdl3blackcrows', 'cdl3inside', 'cdl3linestrike',
-                  'cdl3outside', 'cdl3starsinsouth', 'cdl3whitesoldiers',
-                  'cdlabandonedbaby', 'cdladvanceblock', 'cdlbelthold',
-                  'cdlbreakaway', 'cdlclosingmarubozu', 'cdlconcealbabyswall',
-                  'cdlcounterattack', 'cdldarkcloudcover', 'cdldoji',
-                  'cdldojistar', 'cdldragonflydoji', 'cdlengulfing',
-                  'cdleveningdojistar', 'cdleveningstar', 'cdlgapsidesidewhite',
-                  'cdlgravestonedoji', 'cdlhammer', 'cdlhangingman',
-                  'cdlharami', 'cdlharamicross', 'cdlhighwave',
-                  'cdlhikkake', 'cdlhikkakemod', 'cdlhomingpigeon',
-                  'cdlidentical3crows', 'cdlinneck', 'cdlinvertedhammer',
-                  'cdlkicking', 'cdlkickingbylength', 'cdlladderbottom',
-                  'cdllongleggeddoji', 'cdllongline', 'cdlmarubozu',
-                  'cdlmatchinglow', 'cdlmathold', 'cdlmorningdojistar',
-                  'cdlmorningstar', 'cdlonneck', 'cdlpiercing',
-                  'cdlrickshawman', 'cdlrisefall3methods', 'cdlseparatinglines',
-                  'cdlshootingstar', 'cdlshortline', 'cdlspinningtop',
-                  'cdlstalledpattern', 'cdlsticksandwich', 'cdltakuri',
-                  'cdltasukigap', 'cdlthrusting', 'cdltristar',
-                  'cdlunique3river', 'cdlupsidegap2crows', 'cdlxsidegap3methods'
-        ]
-        return pd.DataFrame({col: [np.nan] * length for col in columns})
+        print(f"Error calculating technical indicators: {str(e)}")
+        # 返回包含NaN的DataFrame，列名与正常计算结果相同
+        columns = ['macd', 'macdsignal', 'macdhist', 'ma7', 'ma14', 'ma30',
+                  'midpoint', 'midprice', 'adx', 'adxr', 'close_slope', 'ma7_slope']
+        columns.extend([f'vol_ma{p}' for p in ma_periods])
+        columns.extend([f'vol_ma{p}_ratio' for p in ma_periods])
+        columns.extend(['vol_change', 'vol_acc', 'vol_std_20', 'vol_std_ratio_20', 'price_vol_corr'])
+        columns.extend(ratio_features.keys())
+        columns.extend(reversal_features.keys())
+        columns.extend(bb_features.keys())
+        
+        return pd.DataFrame({col: [np.nan] * len(group) for col in columns})
 
 def add_technical_indicators(stock_info):
     """
@@ -438,7 +414,7 @@ def add_volume_features(df):
     """
     def process_group(group):
         # 1. 基础成交量移动平均，使用talib中ma接口计算移动平均
-        ma_periods = [3, 5, 10, 20, 30]
+        ma_periods = [3, 7, 14, 30]
         for period in ma_periods:
             group[f'vol_ma{period}'] = talib.MA(group['vol'], timeperiod=period)
             # 相对于移动平均的成交量比
