@@ -14,14 +14,18 @@ from sklearn.preprocessing import MinMaxScaler
 
 def label_price_changes(df, n=5):
     """
-    标注股票价格变化的买入卖出点:
-    - 后5天内涨幅>5%标记为买入点(1)
-    - 后5天内跌幅>5%标记为卖出点(-1) 
-    - 后5天内任意一天pre_close与前一日close不一致时标记为(-2)
-    - 其他标记为非买入点(0)
+    标注股票价格变化的买入卖出点，优化后的选股逻辑：
+    买入点(1)需同时满足:
+    - 后5天内最大涨幅>5%
+    - 后5天内最大跌幅>-3% (控制风险)
+    - 5日平均成交量大于20日平均成交量 (确保交易活跃)
+    - 收盘价大于5日均线 (确保上升趋势)
+    
+    卖出点(-1)和数据不连续点(-2)保持不变
+    其他标记为非买入点(0)
     
     参数:
-    df: DataFrame, 包含股票数据的DataFrame,需要包含['ts_code', 'trade_date', 'close', 'pre_close']列
+    df: DataFrame, 包含股票数据的DataFrame,需要包含必要的价格和成交量数据
     
     返回:
     添加了'label'列的DataFrame
@@ -38,6 +42,12 @@ def label_price_changes(df, n=5):
         max_changes = (future_close['max'] - current_close) / current_close
         min_changes = (future_close['min'] - current_close) / current_close
         
+        # # 计算均线和成交量指标
+        # ma5 = talib.MA(group['close'], timeperiod=5)
+        # ma20 = talib.MA(group['close'], timeperiod=20)
+        # vol_ma5 = talib.MA(group['vol'], timeperiod=5)
+        # vol_ma20 = talib.MA(group['vol'], timeperiod=20)
+        
         # 检查pre_close是否与前一日close一致
         close_shifted = group['close'].shift(1)
         pre_close_match = (group['pre_close'] == close_shifted) | close_shifted.isna()
@@ -48,15 +58,21 @@ def label_price_changes(df, n=5):
         # 标记数据不连续点
         labels = np.where(~pre_close_match, -2, labels)
         
+        # 优化后的买入点标记条件
+        buy_conditions = (
+            (labels == 0) &                    # 非不连续点
+            (max_changes > 0.1) &             # 未来5天最大涨幅>5%
+            (min_changes >= -0.03)            # 未来5天最大跌幅>-3%
+        )
+        
         # 标记买入卖出点
-        labels = np.where((labels == 0) & (max_changes > 0.05), 1, labels)
+        labels = np.where(buy_conditions, 1, labels)
         labels = np.where((labels == 0) & (min_changes < -0.05), -1, labels)
         
         # 最后5天标记为0
-        labels[-5:] = 0
+        labels[-n:] = 0
         
         return pd.Series(labels, index=group.index)
-
     # 按股票代码分组处理
     df['label'] = df.groupby('ts_code', group_keys=False).apply(process_group)
     
@@ -122,7 +138,7 @@ def load_stock_data(table_name='daily_info', file_path='./data/train.nfa'):
     DataFrame: 包含股票数据的DataFrame,按股票代码和交易日期排序
     """
     conn = sqlite3.connect(file_path)
-    sql = f'SELECT * FROM {table_name} ORDER BY ts_code, trade_date asc'
+    sql = f'SELECT * FROM {table_name} WHERE trade_date >= "2010-01-01" ORDER BY ts_code, trade_date asc'
     stock_info = pd.read_sql_query(sql, conn)
     conn.close()
     return stock_info
@@ -182,21 +198,21 @@ def detect_ma_crossovers(group, ma_ratio):
     reversal_points[up_cross] = 1
     reversal_points[down_cross] = -1
     
+    
+    arr = abs(reversal_points)
     # 使用abs(reversal_points)来创建分组标识，这样向上和向下穿越点都会开始新的分组
-    group_id = (abs(reversal_points) > 0).cumsum()
-    
-    # 计算距离天数（向量化操作）
-    # 1. 创建一个布尔掩码，标识非零的group_id
-    valid_groups = group_id > 0
-    
-    # 2. 为每个有效组创建一个累计计数
-    days_since_last_reversal = pd.Series(0, index=group.index)
-    if valid_groups.any():
-        # 对每个组内进行累计计数
-        days_since_last_reversal[valid_groups] = (
-            group_id[valid_groups]
-            .map(group_id[valid_groups].groupby(group_id[valid_groups]).cumcount())
-        )
+    group_id = (arr > 0).cumsum()
+    # 对于每个值为1的位置，我们需要从该位置开始重新计数
+    # 使用where创建一个布尔掩码，标记需要重新开始计数的位置
+    mask = np.where(arr == 1)[0]
+    if len(mask) > 0:
+        # 创建一个与数组等长的序列
+        idx = np.arange(len(arr))
+        # 对于每个分组，减去该组开始位置的索引值
+        days_since_last_reversal = idx - np.maximum.accumulate(np.where(arr == 1, idx, -1)) + 1
+    else:
+        # 如果没有1，则简单地从1到n计数
+        days_since_last_reversal = np.arange(1, len(arr) + 1)
     
     return reversal_points, days_since_last_reversal
 
@@ -346,20 +362,25 @@ def add_technical_indicators(stock_info):
     return stock_info
 
 
-def plot_random_positive_samples(stock_info, n_samples=100, n_before=60, n_after=30):
+def plot_labeled_samples(df, n_samples=100, n_before=60, n_after=30, figsize=(12, 6)):
     """
-    随机抽取n_samples个label为1的样本并绘制K线图
+    随机抽取并展示标签为1的股票K线图
     
     参数:
-    stock_info: DataFrame, 包含股票数据
-    n_samples: int, 要抽取的样本数量
-    n_before: int, 向前查看的交易日数量
-    n_after: int, 向后查看的交易日数量
+    df: DataFrame, 包含股票数据
+    n_samples: int, 要展示的样本数量
+    n_before: int, 展示买入点之前的交易日数量
+    n_after: int, 展示买入点之后的交易日数量
+    figsize: tuple, 图表大小
     """
-    # 获取label为1的样本
-    positive_samples = stock_info[stock_info['label'] == 1]
+    # 设置中文字体
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei']
+    plt.rcParams['axes.unicode_minus'] = False
     
-    # 随机抽取n_samples个样本
+    # 获取标签为1的样本
+    positive_samples = df[df['label'] == 1]
+    
+    # 随机抽取样本
     if len(positive_samples) > n_samples:
         samples = positive_samples.sample(n=n_samples, random_state=42)
     else:
@@ -368,11 +389,87 @@ def plot_random_positive_samples(stock_info, n_samples=100, n_before=60, n_after
     
     # 遍历绘制每个样本的K线图
     for idx, row in enumerate(samples.itertuples(), 1):
-        print(f"Processing sample {idx}/{len(samples)}: {row.ts_code} - {row.trade_date}")
         try:
-            plot_candlestick(stock_info, row.ts_code, row.trade_date, 
-                           n_before=n_before, n_after=n_after)
-            plt.close()  # 关闭图形，释放内存
+            # 获取当前股票的数据切片
+            stock_data = df[df['ts_code'] == row.ts_code].copy()
+            current_idx = stock_data.index.get_loc(row.Index)
+            start_idx = max(0, current_idx - n_before)
+            end_idx = min(len(stock_data), current_idx + n_after + 1)
+            plot_data = stock_data.iloc[start_idx:end_idx].copy()
+            
+            # 转换为mplfinance可用的格式
+            plot_data['trade_date'] = pd.to_datetime(plot_data['trade_date'])
+            plot_data = plot_data.set_index('trade_date')
+            
+            # 重命名列以匹配mplfinance要求
+            plot_data = plot_data.rename(columns={
+                'open': 'Open',
+                'high': 'High',
+                'low': 'Low',
+                'close': 'Close',
+                'vol': 'Volume'
+            })
+            
+            # 设置标记点
+            mark_date = plot_data.index[n_before]
+            signal = pd.Series(np.nan, index=plot_data.index)
+            signal[mark_date] = plot_data.loc[mark_date, 'High']
+            
+            # K线图样式设置
+            kwargs = dict(
+                type='candle',
+                volume=True,
+                figscale=1.5,
+                figratio=(28, 16),
+                datetime_format='%Y-%m-%d',
+                volume_panel=1,
+                title=f'\n{row.ts_code}',
+                panel_ratios=(6,2),
+                returnfig=True,
+                vlines=dict(vlines=[mark_date], linewidths=1, linestyle='--', colors='gray', alpha=0.3)
+            )
+            
+            style = mpf.make_mpf_style(
+                marketcolors=mpf.make_marketcolors(up='red', down='green', edge='black', inherit=True),
+                gridstyle='--',
+                gridcolor='gray',
+                gridaxis='both'
+            )
+            
+            # 计算技术指标并转换为numpy数组
+            ma5 = plot_data['Close'].rolling(window=5).mean().to_numpy()
+            ma20 = plot_data['Close'].rolling(window=20).mean().to_numpy()
+            
+            # 构建addplot对象，使用numpy数组
+            plots = [
+                mpf.make_addplot(plot_data['Close'].to_numpy(), color='black', width=0.8),
+                mpf.make_addplot(ma5, color='blue', width=1, label='MA5'),
+                mpf.make_addplot(ma20, color='orange', width=1, label='MA20'),
+                mpf.make_addplot(signal.to_numpy(), type='scatter', markersize=200, marker='v')
+            ]
+            
+            # 绘制主图表
+            fig, axes = mpf.plot(plot_data, **kwargs, style=style, addplot=plots)
+            
+            # 获取标记点的数据
+            mark_data = plot_data.loc[mark_date]
+            
+            # 添加文本框显示指标数据
+            text = (f'Close: {mark_data["Close"]:.3f}\n'
+                   f'MA5:   {ma5[n_before]:.3f}\n'
+                   f'MA20:  {ma20[n_before]:.3f}')
+            
+            # 创建文本框
+            ax_text = fig.add_axes([0.02, 0.45, 0.15, 0.15])
+            ax_text.text(0, 0, text, fontsize=10, verticalalignment='center', family='monospace')
+            ax_text.axis('off')
+            
+            plt.show()
+            plt.close()
+            
+            # 每10个图表暂停一下，等待用户确认
+            input(f"Press Enter to continue... ({idx}/{len(samples)} samples shown)")
+                
         except Exception as e:
             print(f"Error plotting {row.ts_code} - {row.trade_date}: {str(e)}")
             continue
@@ -598,4 +695,35 @@ def normalize_stock_prices(df, price_cols=['open', 'high', 'low', 'close', 'pre_
 
 
 if __name__ == '__main__':
+    print()
+    print('加载 数据')
+    stock_info = load_stock_data(table_name='stock_info_daily', file_path='C:\\Users\\huang\\Downloads\\stock.nfa')
+    print('设置标签')
+    stock_info = label_price_changes(stock_info, n=7)
+    # save_stock_data(stock_info, 'stock_info_with_lable')
+    print('分析标签分布')
+    stats = analyze_label_distribution(stock_info)
+    print(stats)
+    # 进行归一化处理
+    print('进行归一化处理')
+    stock_info = normalize_stock_prices(stock_info)
+    # 查看结果
+    print("\n归一化结果示例:")
+    sample_stock = stock_info['ts_code'].iloc[0]
+    print(stock_info[stock_info['ts_code'] == sample_stock].head())
     
+    # # 检查拆分情况
+    # split_example = normalized_df.groupby('ts_code').filter(
+    #     lambda x: x['ts_code_split'].nunique() > 1
+    # ).head(10)
+    # print("\n拆分示例:")
+    # print(split_example[['ts_code', 'trade_date', 'ts_code_split', 'close', 'close_norm']])
+    
+    print('添加技术指标')
+    stock_info = add_technical_indicators(stock_info)
+    print('存储技术指标')
+    save_stock_data(stock_info, 'technical_indicators_info', file_path='./data/train.nfa', mode='append')
+    print('预处理数据')
+    print('完成')
+   
+    # stock_info2 = stock_info2.drop(['open', 'close', 'low', 'high', 'ma7', 'ma14', 'ma30', 'macd', 'macdsignal', 'macdhist', 'midpoint', 'midprice', 'vol_ma3', 'vol_ma7', 'vol_ma14', 'vol_ma20', 'vol_std_20', 'pre_close', 'change', 'pct_chg', 'vol', 'amount'], axis=1) 
