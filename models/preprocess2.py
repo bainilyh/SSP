@@ -475,30 +475,6 @@ def plot_labeled_samples(df, n_samples=100, n_before=60, n_after=30, figsize=(12
             continue
 
 
-def get_latest_records(stock_info, n=5):
-    """
-    获取每个股票最后第n天的记录
-    
-    参数:
-    stock_info: DataFrame, 包含股票数据的DataFrame
-    n: int, 获取最后第n天的记录，默认为5天
-    
-    返回:
-    DataFrame: 每个股票最后第n天的记录
-    """
-    # 按股票代码分组，获取每组最后第n条记录
-    latest_records = stock_info.sort_values('trade_date').groupby('ts_code').nth(-n)
-    
-    # 按交易日期降序排序
-    latest_records = latest_records.sort_values(['ts_code', 'trade_date'], ascending=[True, False])
-    
-    print(f"\n共有 {len(latest_records)} 只股票的最后第{n}天记录")
-    print(f"最新交易日期: {latest_records['trade_date'].max()}")
-    print(f"最早交易日期: {latest_records['trade_date'].min()}")
-    
-    return latest_records
-
-
 def add_volume_features(df):
     """
     构建全面的成交量特征
@@ -618,86 +594,40 @@ def add_volume_features(df):
     return df
 
 
-def normalize_stock_prices(df, price_cols=['open', 'high', 'low', 'close', 'pre_close', 'vol', 'amount']):
+def transform_close_to_ranks(df, close_col='close', window=60):
     """
-    对股票价格数据进行归一化处理：
-    1. 检测并处理股票拆分
-    2. 对每个拆分段进行归一化
+    将收盘价转换为两个排名特征
     
     参数:
-    df: DataFrame, 包含股票数据的DataFrame
-    price_cols: list, 需要归一化的价格列名列表
+    df: DataFrame, 包含股票数据的DataFrame，需要包含close列和trade_date列
+    close_col: str, 收盘价列名，默认为'close'
+    window: int, 回看天数，默认60. 如果window不满，就有多少算多少
     
     返回:
-    DataFrame: 包含归一化后价格的DataFrame，新增ts_code_split列标识不同的拆分段
+    DataFrame: 添加了两个新特征的DataFrame
+        - cross_sectional_rank: 横截面排名 (当天所有股票的排名)
+        - time_series_rank: 时间序列排名 (单只股票近window天的排名)
     """
-    def process_group(group):
-        # 检查pre_close是否与前一日close一致
-        close_shifted = group['close'].shift(1)
-        pre_close_match = (group['pre_close'] == close_shifted) | close_shifted.isna()
-        
-        # 标记不同的拆分段
-        split_group = (~pre_close_match).cumsum()
-        group['ts_code_split'] = group['ts_code'] + '_' + split_group.astype(str)
-        
-        # 对每个拆分段使用sklearn的MinMaxScaler进行min max归一化
-        for split_id in split_group.unique():
-            split_mask = split_group == split_id
-            if split_mask.sum() > 0:  # 确保拆分段有数据
-                scaler = MinMaxScaler()
-                data = group.loc[split_mask, price_cols]
-                scaled_data = scaler.fit_transform(data)
-                for idx, col in enumerate(price_cols):
-                    group.loc[split_mask, f'{col}_norm'] = scaled_data[:, idx]
-        return group
+    # 确保数据按日期排序
+    df = df.sort_values('trade_date')
     
-    # 创建副本避免修改原始数据
-    # df_normalized = df.copy()
-    df_normalized = df
+    # 1. 计算横截面排名 (当天所有股票的排名)
+    df['cross_sectional_rank'] = df.groupby('trade_date')[close_col].transform(
+        lambda x: x.rank(pct=True)
+    )
     
-    # 确保数据按股票代码和交易日期排序
-    df_normalized = df_normalized.sort_values(['ts_code', 'trade_date'])
+    # 2. 计算时间序列排名 (单只股票近window天的排名)，若窗口数据不足则使用所有可用数据
+    df['time_series_rank'] = df.groupby('ts_code')[close_col].transform(
+        lambda x: x.rolling(window=window, min_periods=1).rank(pct=True)
+    )
     
-    # 按股票代码分组处理
-    df_normalized = df_normalized.groupby('ts_code', group_keys=False).apply(process_group)
-    
-    # 打印统计信息
-    split_counts = df_normalized.groupby('ts_code')['ts_code_split'].nunique()
-    total_splits = split_counts.sum()
-    stocks_with_splits = (split_counts > 1).sum()
-    
-    print("\n归一化处理统计:")
-    print(f"总股票数: {len(split_counts)}")
-    print(f"发生拆分的股票数: {stocks_with_splits}")
-    print(f"总拆分段数: {total_splits}")
-    print(f"平均每只股票拆分段数: {total_splits/len(split_counts):.2f}")
-    
-    # 检查异常值
-    for col in price_cols:
-        norm_col = f'{col}_norm'
-        if norm_col in df_normalized.columns:
-            abnormal = df_normalized[df_normalized[norm_col] > 10].shape[0]
-            if abnormal > 0:
-                print(f"\n警告: {norm_col} 中有 {abnormal} 条归一化后值大于10的记录")
-    
-    # 新增逻辑: 删除原始价格列，并将归一化后的列名恢复为原始名称
-    price_cols.append('ts_code')
-    df_normalized.drop(columns=price_cols, inplace=True)
-    rename_dict = {f"{col}_norm": col for col in price_cols if f"{col}_norm" in df_normalized.columns}
-    rename_dict['ts_code_split'] = 'ts_code'
-    df_normalized.rename(columns=rename_dict, inplace=True)
-    
-    # 计算pct_chg：前一日的close减去当日的close；如果没有前一日数据则设为0
-    df_normalized['pct_chg'] = df_normalized.groupby('ts_code')['close'].shift(1) - df_normalized['close']
-    df_normalized['pct_chg'].fillna(0, inplace=True)
-    
-    return df_normalized
+    return df
 
 
 if __name__ == '__main__':
     print()
     print('加载 数据')
-    stock_info = load_stock_data(table_name='stock_info_daily', file_path='C:\\Users\\huang\\Downloads\\stock.nfa')
+    stock_info = load_stock_data(table_name='info_daily', file_path='C:\\Users\\huang\\Downloads\\stock.nfa')
     print('设置标签')
     stock_info = label_price_changes(stock_info, n=7)
     # save_stock_data(stock_info, 'stock_info_with_lable')
@@ -705,12 +635,12 @@ if __name__ == '__main__':
     stats = analyze_label_distribution(stock_info)
     print(stats)
     # 进行归一化处理
-    print('进行归一化处理')
-    stock_info = normalize_stock_prices(stock_info)
-    # 查看结果
-    print("\n归一化结果示例:")
-    sample_stock = stock_info['ts_code'].iloc[0]
-    print(stock_info[stock_info['ts_code'] == sample_stock].head())
+    # print('进行归一化处理')
+    # stock_info = normalize_stock_prices(stock_info)
+    # # 查看结果
+    # print("\n归一化结果示例:")
+    # sample_stock = stock_info['ts_code'].iloc[0]
+    # print(stock_info[stock_info['ts_code'] == sample_stock].head())
     
     # # 检查拆分情况
     # split_example = normalized_df.groupby('ts_code').filter(
