@@ -47,6 +47,7 @@ def label_price_changes(df, n=5):
         # ma20 = talib.MA(group['close'], timeperiod=20)
         # vol_ma5 = talib.MA(group['vol'], timeperiod=5)
         # vol_ma20 = talib.MA(group['vol'], timeperiod=20)
+        macd, macdsignal, macdhist = talib.MACD(group['close'], fastperiod=12, slowperiod=26, signalperiod=9)
         
         # 检查pre_close是否与前一日close一致
         close_shifted = group['close'].shift(1)
@@ -62,11 +63,19 @@ def label_price_changes(df, n=5):
         buy_conditions = (
             (labels == 0) &                    # 非不连续点
             (max_changes > 0.1) &             # 未来5天最大涨幅>5%
-            (min_changes >= -0.03)            # 未来5天最大跌幅>-3%
+            (min_changes >= -0.03)           # 未来5天最大跌幅>-3%
+        )
+        
+        buy_conditions2 = (
+            (labels == 0) &                    # 非不连续点
+            (max_changes > 0.1) &             # 未来5天最大涨幅>5%
+            (min_changes >= -0.03) &           # 未来5天最大跌幅>-3%
+            (macdhist >= 0) & (macdhist.shift(1) < 0) # MACD金叉
         )
         
         # 标记买入卖出点
         labels = np.where(buy_conditions, 1, labels)
+        labels = np.where(buy_conditions2, 2, labels)
         labels = np.where((labels == 0) & (min_changes < -0.05), -1, labels)
         
         # 最后5天标记为0
@@ -244,6 +253,7 @@ def calculate_technical_indicators(group):
         midprice = talib.MIDPRICE(group['high'], group['low'], timeperiod=14)
         
         # ===== 动量指标 =====
+        # 调节时间周期，<20 震荡周期 20-25 萌芽  25-50 趋势加速  >50 趋势过高（反转）
         adx = talib.ADX(group['high'], group['low'], group['close'], timeperiod=14)
         adxr = talib.ADXR(group['high'], group['low'], group['close'], timeperiod=14)
         
@@ -627,7 +637,7 @@ def transform_close_to_ranks(df, close_col='close', window=60):
 if __name__ == '__main__':
     print()
     print('加载 数据')
-    stock_info = load_stock_data(table_name='info_daily', file_path='C:\\Users\\huang\\Downloads\\stock.nfa')
+    stock_info = load_stock_data(table_name='stock_info_daily', file_path='C:\\Users\\huang\\Downloads\\stock.nfa')
     print('设置标签')
     stock_info = label_price_changes(stock_info, n=7)
     # save_stock_data(stock_info, 'stock_info_with_lable')
@@ -648,7 +658,7 @@ if __name__ == '__main__':
     # ).head(10)
     # print("\n拆分示例:")
     # print(split_example[['ts_code', 'trade_date', 'ts_code_split', 'close', 'close_norm']])
-    
+    stock_info = transform_close_to_ranks(stock_info)
     print('添加技术指标')
     stock_info = add_technical_indicators(stock_info)
     print('存储技术指标')
@@ -657,3 +667,7 @@ if __name__ == '__main__':
     print('完成')
    
     # stock_info2 = stock_info2.drop(['open', 'close', 'low', 'high', 'ma7', 'ma14', 'ma30', 'macd', 'macdsignal', 'macdhist', 'midpoint', 'midprice', 'vol_ma3', 'vol_ma7', 'vol_ma14', 'vol_ma20', 'vol_std_20', 'pre_close', 'change', 'pct_chg', 'vol', 'amount'], axis=1) 
+    # condition=(stock_info['label']==2) & (~stock_info['ts_code'].str.endswith('.BJ'))
+    
+    
+    
