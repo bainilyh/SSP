@@ -78,52 +78,58 @@ def label_price_changes(df, n=5):
     return df
 
 
-def analyze_label_distribution(df):
+def analyze_label_distribution(df, by_year=False):
     """
     分析标签分布情况
     
     参数:
     df: DataFrame, 包含label列的DataFrame
+    by_year: bool, 是否按年统计分布,默认False。若为True则返回每年的分布统计
     
     返回:
-    包含标签分布统计信息的DataFrame
-
-                    count  percentage    description  avg_5d_change%
-        label                                                   
-        -2       3486    0.299219          数据不连续           94.29
-        -1     163565   14.039529  卖出点(5日内跌幅>5%)           18.92
-        0     747995   64.203816             观望            4.92
-        1     249986   21.457436  买入点(5日内涨幅>5%)           13.57
+    包含标签分布统计信息的DataFrame。若by_year=True则返回一个字典,键为年份,值为对应年份的统计DataFrame
     """
-    # 计算每个标签的数量和占比
-    label_counts = df['label'].value_counts()
-    label_pcts = df['label'].value_counts(normalize=True)
+    def get_stats(data):
+        # 计算每个标签的数量和占比
+        label_counts = data['label'].value_counts()
+        label_pcts = data['label'].value_counts(normalize=True)
+        
+        # 创建结果DataFrame
+        stats = pd.DataFrame({
+            'count': label_counts,
+            'percentage': label_pcts * 100
+        })
+        
+        # 添加标签说明
+        label_desc = {
+            1: '买入点(5日内涨幅>5%)',
+            -1: '卖出点(5日内跌幅>5%)', 
+            -2: '数据不连续',
+            0: '观望'
+        }
+        stats['description'] = stats.index.map(label_desc)
+        
+        # 按标签排序
+        stats = stats.sort_index()
+        
+        # 计算每个标签对应的平均涨跌幅
+        avg_changes = data.groupby('label')['close'].apply(
+            lambda x: ((x.shift(-5) - x) / x).mean() * 100
+        ).round(2)
+        stats['avg_5d_change%'] = avg_changes
+        
+        return stats
     
-    # 创建结果DataFrame
-    stats = pd.DataFrame({
-        'count': label_counts,
-        'percentage': label_pcts * 100
-    })
-    
-    # 添加标签说明
-    label_desc = {
-        1: '买入点(5日内涨幅>5%)',
-        -1: '卖出点(5日内跌幅>5%)', 
-        -2: '数据不连续',
-        0: '观望'
-    }
-    stats['description'] = stats.index.map(label_desc)
-    
-    # 按标签排序
-    stats = stats.sort_index()
-    
-    # 计算每个标签对应的平均涨跌幅
-    avg_changes = df.groupby('label')['close'].apply(
-        lambda x: ((x.shift(-5) - x) / x).mean() * 100
-    ).round(2)
-    stats['avg_5d_change%'] = avg_changes
-    
-    return stats
+    if by_year:
+        # 提取年份
+        df['year'] = df['trade_date'].str[:4]
+        # 按年分组统计
+        yearly_stats = {}
+        for year, group in df.groupby('year'):
+            yearly_stats[year] = get_stats(group)
+        return yearly_stats
+    else:
+        return get_stats(df)
 
 
 def load_stock_data(table_name='daily_info', file_path='./data/train.nfa'):
@@ -137,7 +143,7 @@ def load_stock_data(table_name='daily_info', file_path='./data/train.nfa'):
     DataFrame: 包含股票数据的DataFrame,按股票代码和交易日期排序
     """
     conn = sqlite3.connect(file_path)
-    sql = f'SELECT * FROM {table_name} WHERE trade_date >= "2010-01-01" ORDER BY ts_code, trade_date asc'
+    sql = f'SELECT * FROM {table_name} WHERE trade_date >= "2022-01-01" ORDER BY ts_code, trade_date asc'
     stock_info = pd.read_sql_query(sql, conn)
     conn.close()
     return stock_info
@@ -179,7 +185,7 @@ def calculate_technical_indicators(group):
             timeperiod=20,
             nbdevup=2,
             nbdevdn=2,
-            matype=0
+            matype=0  # 0=SMA, 1=EMA, 2=WMA, 3=DEMA, 4=TEMA, 5=TRIMA, 6=KAMA, 7=MAMA, 8=T3
         )
         
         # ===== MACD指标 =====
@@ -196,6 +202,22 @@ def calculate_technical_indicators(group):
         rsi6 = talib.RSI(group['close'], timeperiod=6)
         rsi12 = talib.RSI(group['close'], timeperiod=12)
         rsi24 = talib.RSI(group['close'], timeperiod=24)
+        
+        # ===== KDJ指标 =====
+        # 计算KDJ指标,默认参数为9,3,3
+        # 1. 计算RSV
+        low_9 = group['low'].rolling(window=22, min_periods=18).min()
+        high_9 = group['high'].rolling(window=22, min_periods=18).max()
+        rsv = (group['close'] - low_9) / (high_9 - low_9) * 100
+        
+        # 2. 计算K值 (使用SMA)
+        k = talib.SMA(rsv, timeperiod=18)
+        
+        # 3. 计算D值 (使用SMA)
+        d = talib.SMA(k, timeperiod=18)
+        
+        # 4. 计算J值
+        j = 3 * k - 2 * d
         
         # ===== 涨幅指标 =====
         # 计算相对于前N天的涨幅百分比
@@ -239,6 +261,11 @@ def calculate_technical_indicators(group):
             'rsi12': rsi12,
             'rsi24': rsi24,
             
+            # KDJ
+            'kdj_k': k,
+            'kdj_d': d,
+            'kdj_j': j,
+            
             # 涨幅指标
             'pct_change_1d': pct_1d,
             'pct_change_6d': pct_6d,
@@ -262,6 +289,7 @@ def calculate_technical_indicators(group):
             'macd', 'macdsignal', 'macdhist',
             'bb_upper', 'bb_middle', 'bb_lower',
             'rsi6', 'rsi12', 'rsi24',
+            'kdj_k', 'kdj_d', 'kdj_j',
             'pct_change_1d', 'pct_change_6d', 
             'pct_change_12d', 'pct_change_24d',
             'has_xrights', 'has_xrights_30d'
@@ -318,10 +346,16 @@ def select_stocks_by_indicators(df, date=None):
     """
     # 基础条件
     conditions = (
-        (df['has_xrights_30d'] == False) &
-        (df['label'] == 1)
+        (df['macdhist'] > 0) &
+        (df['kdj_k'] - df['kdj_d'] > 0) &
+        (df.shift(1)['kdj_k'] - df.shift(1)['kdj_d'] < 0) &
+        (df['sar'] < df['close']) &
+        (df['has_xrights_30d'] == False)
     )
     
+    condition1= (a['label'] == -1) & (a['trade_date']>='20250101')
+    condition1= (stock_info['ts_code'] == '000006.SZ') & (stock_info['trade_date']=='20250120')
+    stock_info[condition1][['ts_code', 'trade_date', 'kdj_k', 'kdj_d', 'kdj_j']].head()
     # 如果指定了日期，添加日期过滤
     if date:
         conditions = conditions & (df['trade_date'] == date)
@@ -1049,7 +1083,7 @@ def plot_advanced_price_box(df, ts_code, start_date=None, end_date=None, period=
 if __name__ == '__main__':
     print()
     print('加载数据')
-    stock_info = load_stock_data(table_name='stock_info_daily', file_path='C:\\Users\\huang\\Downloads\\stock.nfa')
+    stock_info = load_stock_data(table_name='daily_info', file_path='C:\\Users\\huang\\stock_info.db')
     print('添加技术指标')
     stock_info = add_technical_indicators(stock_info)
     print('设置标签')
